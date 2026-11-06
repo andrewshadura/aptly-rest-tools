@@ -288,6 +288,40 @@ async fn sync_dist(
         );
     }
 
+    // Delete the previous publish first, as aptly refuses to delete snapshots
+    // that are still published
+    if let (Some(publish_prefix), AptDist::Snapshot { .. }) = (&opts.publish_prefix, &apt_repo.dist)
+    {
+        let publish_key = AptlyPublishedDist {
+            prefix: publish_prefix.clone(),
+            distribution: dist_path.clone(),
+        };
+
+        if opts.delete_existing_snapshot_publish && aptly_published_cache.contains(&publish_key) {
+            if opts.dry_run {
+                info!(
+                    "Would delete previous published distribution {}/{}",
+                    publish_prefix, dist_path
+                );
+            } else {
+                info!(
+                    "Deleting previous published distribution {}/{}...",
+                    publish_prefix, dist_path
+                );
+                aptly
+                    .publish_prefix(publish_prefix)
+                    .distribution(&dist_path)
+                    .delete(&publish::DeleteOptions {
+                        force: true,
+                        ..Default::default()
+                    })
+                    .await?;
+            }
+
+            aptly_published_cache.remove(&publish_key);
+        }
+    }
+
     for component in scanner.components() {
         let aptly_repo = match aptly_repo_template {
             MaybeTemplate::Static(static_) => static_.to_owned(),
@@ -388,40 +422,14 @@ async fn sync_dist(
             distribution: dist_path.clone(),
         };
 
-        if aptly_published_cache.contains(&publish_key) {
-            if matches!(apt_repo.dist, AptDist::Snapshot { .. })
-                && opts.delete_existing_snapshot_publish
-            {
-                if opts.dry_run {
-                    info!(
-                        "Would delete previous published distribution {}/{}",
-                        publish_prefix, dist_path
-                    );
-                } else {
-                    info!(
-                        "Deleting previous published distribution {}/{}...",
-                        publish_prefix, dist_path
-                    );
-                    aptly
-                        .publish_prefix(publish_prefix)
-                        .distribution(&dist_path)
-                        .delete(&publish::DeleteOptions {
-                            force: true,
-                            ..Default::default()
-                        })
-                        .await?;
-                }
-
-                aptly_published_cache.remove(&publish_key);
-            } else if !(matches!(apt_repo.dist, AptDist::Dist(_))
-                && opts.update_existing_repo_publish)
-            {
-                warn!(
-                    "Publish prefix {}/{} already exists, skipping",
-                    publish_prefix, dist_path
-                );
-                return Ok(());
-            }
+        if aptly_published_cache.contains(&publish_key)
+            && !(matches!(apt_repo.dist, AptDist::Dist(_)) && opts.update_existing_repo_publish)
+        {
+            warn!(
+                "Publish prefix {}/{} already exists, skipping",
+                publish_prefix, dist_path
+            );
+            return Ok(());
         }
 
         let architectures = std::iter::once("source".to_owned())
