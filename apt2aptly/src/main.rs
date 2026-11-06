@@ -9,6 +9,7 @@ use aptly_rest::{
     api::{publish, repos, snapshots::DeleteOptions},
     AptlyRest, AptlyRestError,
 };
+use chrono::{DateTime, Utc};
 use clap::{builder::ArgPredicate, Parser};
 use color_eyre::{
     eyre::{bail, ensure, Context},
@@ -200,6 +201,25 @@ impl AptDist<'_, '_> {
     }
 }
 
+/// Build a unique, directory-safe upload directory name for `dist`.
+///
+/// Non-alphanumeric characters in `dist` (e.g. `/`) are replaced by `-`, and
+/// a UTC timestamp and a random suffix are appended so that concurrent runs,
+/// even for the same distribution, don't share an upload directory.
+fn upload_dir_name(dist: &str, time: DateTime<Utc>, suffix: u32) -> String {
+    format!(
+        "apt2aptly-{}-{}-{suffix:08x}",
+        dist.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-"),
+        time.format("%Y%m%dT%H%M%SZ")
+    )
+}
+
+fn random_suffix() -> Result<u32> {
+    let mut bytes = [0; 4];
+    getrandom::fill(&mut bytes).wrap_err("Failed to generate random suffix")?;
+    Ok(u32::from_ne_bytes(bytes))
+}
+
 struct AptRepo<'s, 't> {
     root: &'s Url,
     dist: AptDist<'s, 't>,
@@ -341,13 +361,7 @@ async fn sync_dist(
         if !opts.dry_run {
             actions
                 .apply(
-                    &format!(
-                        "apt2aptly-{}",
-                        apt_repo
-                            .dist
-                            .base_dist()
-                            .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
-                    ),
+                    &upload_dir_name(apt_repo.dist.base_dist(), Utc::now(), random_suffix()?),
                     &UploadOptions {
                         max_parallel: opts.max_parallel,
                     },
@@ -549,4 +563,29 @@ async fn main() -> Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    #[test]
+    fn upload_dir_name_is_unique_and_directory_safe() {
+        let time = Utc.with_ymd_and_hms(2026, 1, 29, 7, 12, 58).unwrap();
+
+        assert_eq!(
+            upload_dir_name("v2022", time, 0x1a2b3c4d),
+            "apt2aptly-v2022-20260129T071258Z-1a2b3c4d"
+        );
+        assert_eq!(
+            upload_dir_name("foo/bar.baz_qux-1", time, 0xf),
+            "apt2aptly-foo-bar-baz_qux-1-20260129T071258Z-0000000f"
+        );
+        assert_ne!(
+            upload_dir_name("v2022", time, 1),
+            upload_dir_name("v2022", time, 2)
+        );
+    }
 }
