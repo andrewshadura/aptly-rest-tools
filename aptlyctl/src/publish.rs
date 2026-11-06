@@ -2,10 +2,10 @@ use std::{io::stdout, process::ExitCode};
 
 use aptly_rest::{api::publish, AptlyRest};
 use clap::{Parser, Subcommand, ValueEnum};
-use color_eyre::Result;
+use color_eyre::{eyre::bail, Result};
 use tracing::{debug, info};
 
-use crate::OutputFormat;
+use crate::{names_or_stdin, OutputFormat};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum SourceKind {
@@ -83,9 +83,15 @@ pub struct PublishUpdateOpts {
 #[derive(Parser, Debug)]
 pub struct PublishDropOpts {
     prefix: String,
-    distribution: String,
+    /// Distributions to drop; several are dropped at once and need
+    /// --skip-cleanup; `-` reads them from stdin, one per line
+    #[clap(required = true)]
+    distributions: Vec<String>,
     #[clap(long)]
     force: bool,
+    /// Don't remove pool files no longer referenced by any publish
+    #[clap(long)]
+    skip_cleanup: bool,
     #[clap(long)]
     ignore_if_missing: bool,
 }
@@ -192,24 +198,43 @@ impl PublishCommand {
                 );
             }
             PublishCommand::Drop(args) => {
-                if args.ignore_if_missing
-                    && !aptly
-                        .published()
-                        .await?
-                        .into_iter()
-                        .any(|p| p.prefix() == args.prefix && p.distribution() == args.distribution)
-                {
-                    info!("Not published; doing nothing.");
+                let distributions = names_or_stdin(args.distributions)?;
+                let distributions = if args.ignore_if_missing {
+                    let published = aptly.published().await?;
+                    let (present, missing): (Vec<_>, Vec<_>) =
+                        distributions.into_iter().partition(|d| {
+                            published
+                                .iter()
+                                .any(|p| p.prefix() == args.prefix && p.distribution() == d)
+                        });
+                    for d in missing {
+                        info!("'{}/{d}' not published; skipping.", args.prefix);
+                    }
+                    present
                 } else {
-                    aptly
-                        .publish_prefix(&args.prefix)
-                        .distribution(&args.distribution)
-                        .delete(&publish::DeleteOptions { force: args.force })
-                        .await?;
-                    info!(
-                        "Deleted published repository at '{}/{}'",
-                        args.prefix, args.distribution
-                    );
+                    distributions
+                };
+
+                if distributions.len() > 1 && !args.skip_cleanup {
+                    bail!("--skip-cleanup is required to drop more than one distribution");
+                }
+
+                let options = publish::DeleteOptions {
+                    force: args.force,
+                    skip_cleanup: args.skip_cleanup,
+                };
+                let prefix = aptly.publish_prefix(&args.prefix);
+                match distributions.as_slice() {
+                    [] => info!("Nothing to drop."),
+                    [distribution] => prefix.distribution(distribution).delete(&options).await?,
+                    _ => {
+                        prefix
+                            .delete_distributions(&distributions, &options)
+                            .await?
+                    }
+                }
+                for d in &distributions {
+                    info!("Deleted published repository at '{}/{d}'", args.prefix);
                 }
             }
         }

@@ -1,8 +1,8 @@
-use std::process::ExitCode;
+use std::{io::stdin, process::ExitCode};
 
 use aptly_rest::AptlyRest;
 use clap::{Parser, Subcommand, ValueEnum};
-use color_eyre::Result;
+use color_eyre::{eyre::ensure, Result};
 use mirror::MirrorCommand;
 use publish::PublishCommand;
 use repo::RepoCommand;
@@ -24,6 +24,25 @@ enum OutputFormat {
     Name,
     Json,
     Yaml,
+}
+
+/// Return the given names, or read them from stdin, one per line, if the
+/// only name given is `-`
+fn names_or_stdin(names: Vec<String>) -> Result<Vec<String>> {
+    if names != ["-"] {
+        return Ok(names);
+    }
+
+    let mut names = vec![];
+    for line in stdin().lines() {
+        let line = line?;
+        let name = line.trim();
+        if !name.is_empty() {
+            names.push(name.to_owned());
+        }
+    }
+    ensure!(!names.is_empty(), "No names given on stdin");
+    Ok(names)
 }
 
 #[derive(Subcommand, Debug)]

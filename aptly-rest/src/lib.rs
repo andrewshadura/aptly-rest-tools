@@ -4,7 +4,7 @@ use api::{
     packages::PackagesApi,
     publish::{PublishApi, PublishedRepo},
     repos::{Repo, RepoApi},
-    snapshots::{Snapshot, SnapshotApi},
+    snapshots::{self, Snapshot, SnapshotApi},
 };
 use reqwest::header;
 use serde::{Deserialize, Serialize};
@@ -131,6 +131,29 @@ impl AptlyRest {
     pub async fn snapshots(&self) -> Result<Vec<Snapshot>, AptlyRestError> {
         let url = self.url(&["api", "snapshots"]);
         self.get(url).await
+    }
+
+    /// Delete several snapshots at once; either all of them are deleted or
+    /// none are
+    pub async fn delete_snapshots(
+        &self,
+        names: &[String],
+        options: &snapshots::DeleteOptions,
+    ) -> Result<(), AptlyRestError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct DeleteRequest<'a> {
+            names: &'a [String],
+            force: bool,
+        }
+
+        let url = self.url(&["api", "snapshots"]);
+        self.send_request(self.client.delete(url).json(&DeleteRequest {
+            names,
+            force: options.force,
+        }))
+        .await?;
+        Ok(())
     }
 
     fn url<I>(&self, parts: I) -> Url

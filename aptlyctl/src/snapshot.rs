@@ -1,12 +1,12 @@
 use std::{io::stdout, process::ExitCode};
 
-use aptly_rest::{AptlyRest, AptlyRestError};
+use aptly_rest::{api::snapshots, AptlyRest, AptlyRestError};
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use http::StatusCode;
 use tracing::info;
 
-use crate::OutputFormat;
+use crate::{names_or_stdin, OutputFormat};
 
 #[derive(Parser, Debug)]
 pub struct SnapshotListOpts {
@@ -21,7 +21,11 @@ pub struct SnapshotTestExistsOpts {
 
 #[derive(Parser, Debug)]
 pub struct SnapshotDropOpts {
-    snapshot: String,
+    /// Snapshots to drop; several are dropped at once, all or none; `-` reads
+    /// them from stdin, one per line
+    #[clap(required = true)]
+    snapshots: Vec<String>,
+    /// Drop snapshots even if other snapshots use them as a source
     #[clap(long)]
     force: bool,
 }
@@ -70,11 +74,16 @@ impl SnapshotCommand {
             }
 
             SnapshotCommand::Drop(args) => {
-                aptly
-                    .snapshot(&args.snapshot)
-                    .delete(&Default::default())
-                    .await?;
-                info!("Deleted snapshot '{}'", args.snapshot);
+                let names = names_or_stdin(args.snapshots)?;
+                let options = snapshots::DeleteOptions { force: args.force };
+                if let [snapshot] = names.as_slice() {
+                    aptly.snapshot(snapshot).delete(&options).await?;
+                } else {
+                    aptly.delete_snapshots(&names, &options).await?;
+                }
+                for snapshot in &names {
+                    info!("Deleted snapshot '{snapshot}'");
+                }
             }
         }
 

@@ -271,6 +271,7 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "url",
+ "wiremock",
 ]
 
 [[package]]

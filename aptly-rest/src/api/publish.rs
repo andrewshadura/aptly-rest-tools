@@ -49,6 +49,30 @@ impl PublishApi<'_> {
             )
             .await
     }
+
+    /// Delete several published distributions under this prefix at once
+    pub async fn delete_distributions(
+        &self,
+        distributions: &[String],
+        options: &DeleteOptions,
+    ) -> Result<(), AptlyRestError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct DeleteRequest<'a> {
+            distributions: &'a [String],
+            force: bool,
+            skip_cleanup: bool,
+        }
+
+        self.aptly
+            .send_request(self.aptly.client.delete(self.url()).json(&DeleteRequest {
+                distributions,
+                force: options.force,
+                skip_cleanup: options.skip_cleanup,
+            }))
+            .await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +99,9 @@ impl DistributionApi<'_> {
             let mut pairs = url.query_pairs_mut();
             if options.force {
                 pairs.append_pair("force", "1");
+            }
+            if options.skip_cleanup {
+                pairs.append_pair("SkipCleanup", "1");
             }
         }
 
@@ -285,4 +312,5 @@ pub struct UpdateOptions {
 #[derive(Debug, Default, Clone)]
 pub struct DeleteOptions {
     pub force: bool,
+    pub skip_cleanup: bool,
 }

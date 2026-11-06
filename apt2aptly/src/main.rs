@@ -400,7 +400,10 @@ async fn sync_dist(
                     aptly
                         .publish_prefix(publish_prefix)
                         .distribution(&dist_path)
-                        .delete(&publish::DeleteOptions { force: true })
+                        .delete(&publish::DeleteOptions {
+                            force: true,
+                            ..Default::default()
+                        })
                         .await?;
                 }
 
