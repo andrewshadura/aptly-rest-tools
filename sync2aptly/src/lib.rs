@@ -413,7 +413,17 @@ trait Syncer: Send {
     ) -> Result<()>;
 }
 
-struct BinaryDepSyncer;
+/// Options controlling how the origin is synced into aptly
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SyncOptions {
+    /// Make aptly match the origin even if that means replacing packages with
+    /// lower versions, e.g. when the origin has been rolled back
+    pub allow_downgrades: bool,
+}
+
+struct BinaryDepSyncer {
+    options: SyncOptions,
+}
 
 #[async_trait::async_trait]
 impl Syncer for BinaryDepSyncer {
@@ -441,8 +451,26 @@ impl Syncer for BinaryDepSyncer {
     ) -> Result<()> {
         // Simple case just one package on both sides
         let origin_newest = origin.newest()?;
-        let aptly_newest = aptly.newest()?;
 
+        if self.options.allow_downgrades {
+            // Mirror the origin exactly, whichever way the version moved
+            let existing = aptly
+                .keys()
+                .find(|key| key.hash() == origin_newest.aptly_hash);
+            if existing.is_none() {
+                debug!("== Changes for {} ==", name);
+                actions.add_deb(origin_newest)?;
+            }
+
+            for key in aptly.keys() {
+                if existing != Some(key) {
+                    actions.remove_aptly(key.clone());
+                }
+            }
+            return Ok(());
+        }
+
+        let aptly_newest = aptly.newest()?;
         let mut keep_aptly_newest = true;
 
         if origin_newest.version.get()? < aptly_newest.version() {
@@ -462,7 +490,9 @@ impl Syncer for BinaryDepSyncer {
     }
 }
 
-struct BinaryInDepSyncer;
+struct BinaryInDepSyncer {
+    options: SyncOptions,
+}
 
 #[async_trait::async_trait]
 impl Syncer for BinaryInDepSyncer {
@@ -549,8 +579,12 @@ impl Syncer for BinaryInDepSyncer {
             // Assuming all builds from the same source version will have the same version of the
             // package
             let deb_version = debs[0].version.get()?;
-            // If version is newer than everything in aptly add the package
-            if aptly.keys().all(|a| a.version() < deb_version) {
+            // If version is newer than everything in aptly add the package; when
+            // downgrades are allowed, add it unless aptly has this exact version
+            if aptly.keys().all(|a| a.version() < deb_version)
+                || (self.options.allow_downgrades
+                    && aptly.keys().all(|a| a.version() != deb_version))
+            {
                 actions.add_deb_with_options(
                     debs[0],
                     &AddDebOptions {
@@ -569,7 +603,7 @@ impl Syncer for BinaryInDepSyncer {
 
         let origin_newest = &origin.newest()?.version.get()?;
         for a in aptly.keys().filter(|key| !keep_in_aptly.contains(key)) {
-            if a.version() < origin_newest {
+            if self.options.allow_downgrades || a.version() < origin_newest {
                 actions.remove_aptly(a.clone());
             } else {
                 debug!("Keeping {} as it was newer than anything in origin", a);
@@ -1252,6 +1286,7 @@ pub async fn sync(
     aptly: AptlyRest,
     aptly_content: AptlyContent,
     pool_packages: PoolPackagesCache,
+    options: &SyncOptions,
 ) -> Result<SyncActions> {
     let mut actions = SyncActions::new(aptly, aptly_content.repo().to_owned(), pool_packages);
     let architectures: HashSet<_> = origin_content
@@ -1279,7 +1314,7 @@ pub async fn sync(
         sync_packages(
             &mut origin_iter,
             &mut aptly_iter,
-            &mut BinaryDepSyncer,
+            &mut BinaryDepSyncer { options: *options },
             &mut actions,
         )
         .await?;
@@ -1289,7 +1324,7 @@ pub async fn sync(
     sync_packages(
         &mut origin_content.binary_indep.iter(),
         &mut aptly_content.binary_indep.iter(),
-        &mut BinaryInDepSyncer,
+        &mut BinaryInDepSyncer { options: *options },
         &mut actions,
     )
     .await?;

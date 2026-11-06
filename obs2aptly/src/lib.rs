@@ -113,5 +113,12 @@ pub async fn sync(
     scan_options: &ScanOptions,
 ) -> Result<SyncActions> {
     let origin_content = scan_content(obs_path, scan_options).await?;
-    sync2aptly::sync(origin_content, aptly, aptly_content, pool_packages).await
+    sync2aptly::sync(
+        origin_content,
+        aptly,
+        aptly_content,
+        pool_packages,
+        &Default::default(),
+    )
+    .await
 }

@@ -4621,6 +4621,7 @@ name = "sync2aptly"
 version = "0.1.0"
 dependencies = [
  "aptly-rest",
+ "aptly-rest-mock",
  "async-trait",
  "backoff",
  "color-eyre",

@@ -19,7 +19,7 @@ use futures::io::{AsyncBufRead, BufReader as AsyncBufReader};
 use reqwest::Client;
 use sync2aptly::{
     AptlyContent, LazyVersion, OriginContentBuilder, OriginDeb, OriginDsc, OriginLocation,
-    PackageName, PoolPackagesCache, SyncActions,
+    PackageName, PoolPackagesCache, SyncActions, SyncOptions,
 };
 use tracing::{info, info_span, warn};
 use url::Url;
@@ -302,6 +302,17 @@ impl DistScanner {
         self.scan_sources(&mut builder, component).await?;
 
         let origin_content = builder.build();
-        sync2aptly::sync(origin_content, aptly, aptly_content, pool_packages).await
+        // The apt repository is the source of truth, so mirror it exactly,
+        // including rollbacks to older versions
+        sync2aptly::sync(
+            origin_content,
+            aptly,
+            aptly_content,
+            pool_packages,
+            &SyncOptions {
+                allow_downgrades: true,
+            },
+        )
+        .await
     }
 }
