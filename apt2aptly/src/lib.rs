@@ -21,7 +21,7 @@ use sync2aptly::{
     AptlyContent, LazyVersion, OriginContentBuilder, OriginDeb, OriginDsc, OriginLocation,
     PackageName, PoolPackagesCache, SyncActions, SyncOptions,
 };
-use tracing::{info, info_span, warn};
+use tracing::{debug, info, info_span, warn};
 use url::Url;
 
 use aptly_rest::{
@@ -29,6 +29,31 @@ use aptly_rest::{
     key::{AptlyHashBuilder, AptlyHashFile},
     AptlyRest,
 };
+
+pub mod filter;
+
+use filter::PackageFilters;
+
+/// Load the content of an aptly repo holding the given component, leaving out
+/// the packages `filters` skip
+#[tracing::instrument(skip(aptly, filters))]
+pub async fn load_aptly_content(
+    aptly: &AptlyRest,
+    repo: String,
+    component: &str,
+    filters: &PackageFilters,
+) -> Result<AptlyContent> {
+    let keys = aptly.repo(&repo).packages().list().await?;
+    let mut content = AptlyContent::new_empty(repo);
+    for key in keys {
+        if filters.ignores_aptly_key(component, &key) {
+            debug!("Skipping {key} in aptly");
+        } else {
+            content.add_key(key);
+        }
+    }
+    Ok(content)
+}
 
 #[tracing::instrument]
 fn basename_or_error(path: &str) -> Result<&str> {
@@ -165,13 +190,14 @@ impl DistScanner {
         )))
     }
 
-    #[tracing::instrument(skip(self, builder, component))]
+    #[tracing::instrument(skip(self, builder, component, filters))]
     async fn scan_packages(
         &self,
         builder: &mut OriginContentBuilder,
         component: &str,
         arch: &str,
         is_installer: bool,
+        filters: &PackageFilters,
     ) -> Result<()> {
         info!("Scanning packages");
 
@@ -187,10 +213,17 @@ impl DistScanner {
         let mut reader = self.entry_reader(&entry, entry.compression).await?;
         while let Some(paragraph) = reader.read_paragraph().await? {
             let bin = BinaryPackageControlFile::from(paragraph);
-            let package: PackageName = bin.package()?.into();
+            let name = bin.package()?;
+            let package: PackageName = name.into();
 
             let span = info_span!("scan_packages:package", ?package);
             let _enter = span.enter();
+
+            let architecture = bin.architecture()?;
+            if filters.ignores_origin_binary(component, name, architecture) {
+                debug!("Skipping {package} ({architecture})");
+                continue;
+            }
 
             let filename = bin.required_field_str("Filename")?;
 
@@ -212,7 +245,7 @@ impl DistScanner {
             builder.add_deb(OriginDeb {
                 package,
                 version: LazyVersion::with_value(bin.version()?),
-                architecture: bin.architecture()?.to_owned(),
+                architecture: architecture.to_owned(),
                 location: self.root_location.join(filename)?,
                 from_source,
                 aptly_hash,
@@ -222,11 +255,12 @@ impl DistScanner {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, builder, component))]
+    #[tracing::instrument(skip(self, builder, component, filters))]
     async fn scan_sources(
         &self,
         builder: &mut OriginContentBuilder,
         component: &str,
+        filters: &PackageFilters,
     ) -> Result<()> {
         info!("Scanning sources");
 
@@ -240,14 +274,19 @@ impl DistScanner {
         let mut reader = self.entry_reader(&entry, entry.compression).await?;
         while let Some(paragraph) = reader.read_paragraph().await? {
             let source = DebianSourceControlFile::from(paragraph);
-            let package = source
+            let name = source
                 .source()
                 .or_else(|_| source.required_field_str("Package"))
-                .map_err(|_| eyre!("Missing Source/Package field"))?
-                .into();
+                .map_err(|_| eyre!("Missing Source/Package field"))?;
+            let package: PackageName = name.into();
 
             let span = info_span!("scan_sources:package", ?package);
             let _enter = span.enter();
+
+            if filters.ignores_origin_source(component, name) {
+                debug!("Skipping source {package}");
+                continue;
+            }
 
             let files = collect_source_files(&source)?;
             let dsc = find_dsc_file(&files)?;
@@ -282,24 +321,25 @@ impl DistScanner {
         fields(
             root_location = self.root_location.as_url().unwrap().as_str(),
             release = self.release.root_relative_path()),
-        skip(self, aptly, aptly_content, pool_packages))]
+        skip(self, aptly, aptly_content, pool_packages, filters))]
     pub async fn sync_component(
         &self,
         component: &str,
         aptly: AptlyRest,
         aptly_content: AptlyContent,
         pool_packages: PoolPackagesCache,
+        filters: &PackageFilters,
     ) -> Result<SyncActions> {
         let mut builder = OriginContentBuilder::new();
 
         for arch in &self.architectures {
             for is_installer in [false, true] {
-                self.scan_packages(&mut builder, component, arch, is_installer)
+                self.scan_packages(&mut builder, component, arch, is_installer, filters)
                     .await?;
             }
         }
 
-        self.scan_sources(&mut builder, component).await?;
+        self.scan_sources(&mut builder, component, filters).await?;
 
         let origin_content = builder.build();
         // The apt repository is the source of truth, so mirror it exactly,

@@ -176,6 +176,7 @@ name = "apt2aptly"
 version = "0.1.0"
 dependencies = [
  "aptly-rest",
+ "aptly-rest-mock",
  "async-trait",
  "chrono",
  "clap",
@@ -187,12 +188,15 @@ dependencies = [
  "leon",
  "reqwest",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "sync2aptly",
  "tokio",
  "tracing",
  "tracing-error",
  "tracing-subscriber",
  "url",
+ "wiremock",
 ]
 
 [[package]]

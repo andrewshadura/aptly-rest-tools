@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use apt2aptly::filter::PackageFilters;
 use aptly_rest::{
     api::{publish, repos, snapshots::DeleteOptions},
     AptlyRest, AptlyRestError,
@@ -87,6 +88,8 @@ struct Opts {
     /// Only show changes, don't apply them
     #[clap(short = 'n', long, default_value_t = false)]
     dry_run: bool,
+    #[clap(flatten)]
+    filters: PackageFilters,
 }
 
 const TEMPLATE_VAR_COMPONENT: &str = "component";
@@ -271,6 +274,7 @@ async fn sync_dist(
     apt_repo: &AptRepo<'_, '_>,
     opts: &Opts,
 ) -> Result<()> {
+    let filters = &opts.filters;
     let mut sources = vec![];
 
     let dist_path = apt_repo.dist.path();
@@ -330,7 +334,7 @@ async fn sync_dist(
         }
 
         let aptly_contents = if repo_exists(aptly, &aptly_repo).await? {
-            AptlyContent::new_from_aptly(aptly, aptly_repo.clone()).await?
+            apt2aptly::load_aptly_content(aptly, aptly_repo.clone(), component, filters).await?
         } else if opts.create_aptly_repo {
             if opts.dry_run {
                 info!("Would create repo {aptly_repo}");
@@ -344,7 +348,7 @@ async fn sync_dist(
                     )
                     .await?;
                 info!("Created aptly repo {aptly_repo}");
-                AptlyContent::new_from_aptly(aptly, aptly_repo.clone()).await?
+                apt2aptly::load_aptly_content(aptly, aptly_repo.clone(), component, filters).await?
             }
         } else {
             bail!("Repo {aptly_repo} does not exist");
@@ -356,6 +360,7 @@ async fn sync_dist(
                 aptly.clone(),
                 aptly_contents,
                 pool_packages.clone(),
+                filters,
             )
             .await?;
         if !opts.dry_run {
